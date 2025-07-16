@@ -1,6 +1,6 @@
 ---
 title: "Extracción de tendencias"
-author: "Juan Villada"
+author: "Juan Villada - David Romero"
 date: "2025-06-25"
 output: pdf_document
 ---
