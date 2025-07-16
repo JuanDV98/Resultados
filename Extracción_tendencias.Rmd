@@ -1,0 +1,239 @@
+---
+title: "Extracción de tendencias"
+author: "Juan Villada"
+date: "2025-06-25"
+output: pdf_document
+---
+Librerias
+
+```{r setup, include=FALSE}
+## Importación e instalación de librerias
+
+# Manejo de archivos
+library(readxl) # Lectura de Excel
+library(openxlsx)
+library(writexl)
+
+#install.packages("writexl")
+
+# Manejo de datos convencional
+library(dplyr) # Manipulación de dataframes
+library(tidyr) # Ordenamiento de datos
+library(stringr) # Manipulación de Strings
+
+# PLN (Procesamiento de lenguaje natural)
+library(quanteda) # Creación y manipulación de corpus textual
+library(tm) # Procesamiento de lenguaje natural clásico
+library(SnowballC) # Paquete para extraer el núcleo de las palabras
+library(udpipe) # Tokenizar, etiquetar, lematizar 
+
+#install.packages("visNetwork")
+
+# Graficos
+library(wordcloud) # Nube de palabras
+library(igraph) # Red de palabras
+library(visNetwork)
+
+```
+
+```{r setup, include=FALSE}
+# Lectura de archivo original
+
+#df <- read_excel("C://Users//DELL//Downloads//DB_Anexo1_GF.xlsx", sheet = "Hoja1")
+df <- read_excel("C://Users//juan.villada//Downloads//DB_Anexo1_GF.xlsx", sheet = "Hoja1")
+
+summary(df)
+
+# Asignación de ID unico por registro
+df$id <- 1:nrow(df)
+#str(df)
+```
+
+```{r setup, include=FALSE}
+
+# Pre-procesamiento de datos
+
+# Función para quitar tildes
+quitar_tildes <- content_transformer(function(x) {
+  iconv(x, from = "UTF-8", to = "ASCII//TRANSLIT")
+})
+
+# Limpieza de "Respuestas"
+corpus <- Corpus(VectorSource(df$Respuesta)) %>%
+  tm_map(quitar_tildes) %>%                   # Retiro de tíldes
+  tm_map(content_transformer(tolower)) %>%    # Todo el texto a minusculas
+  tm_map(removePunctuation) %>%               # Retiro de puntuación
+  tm_map(removeNumbers) %>%                   # Retiro de números
+  tm_map(removeWords, stopwords("spanish")) %>%    # Retiro de conectores
+  tm_map(stripWhitespace)                     # Retiro de espaciado al inicio, final o doble
+
+# Almacenamiento de corpus limpio en el dataframe original
+df$respuesta_dep <- sapply(corpus, as.character)
+
+# Retiro de la palabra speaker
+df$respuesta_dep <- gsub("\\bspeaker\\b", "", df$respuesta_dep)
+
+# Elimina espacios dobles que puedan haber quedado
+df$respuesta_dep <- gsub("\\s+", " ", df$respuesta_dep)
+# Quita espacios al inicio y fin si es necesario
+df$respuesta_dep <- trimws(df$respuesta_dep)
+
+# Limpieza de componentes auxiliares
+rm(quitar_tildes, corpus)
+
+```
+
+
+```{r setup, include=FALSE}
+
+# Lemanización
+
+# Dividir las respuestas por palabras
+respuestas_token <- strsplit(df$respuesta_dep, " ")
+
+# Aplicar stemming a cada palabra
+respuestas_stemmed <- lapply(respuestas_token, function(palabras) {
+  wordStem(palabras, language = "spanish")
+})
+
+# Unir de nuevo las palabras
+df$respuesta_raiz <- sapply(respuestas_stemmed, paste, collapse = " ")
+
+rm(respuestas_token, respuestas_stemmed)
+
+```
+
+
+```{r setup, include=FALSE}
+
+# Cargar modelo en español
+modelo <- udpipe_download_model(language = "spanish")
+modelo <- udpipe_load_model(file = modelo$file_model)
+
+# Anotar con UDPipe
+anotado <- udpipe_annotate(modelo, x = df$respuesta_dep, doc_id = df$id)
+anotado <- as.data.frame(anotado)
+
+# Agrupar por documento y extraer palabras por categoría
+resumen <- anotado %>%
+  filter(upos %in% c("NOUN", "VERB", "ADJ", "ADV")) %>%
+  group_by(doc_id, upos) %>%
+  summarise(palabras = paste(lemma, collapse = " "), .groups = "drop") %>%
+  pivot_wider(names_from = upos, values_from = palabras)
+
+# Renombrar columnas
+names(resumen) <- c("id", "Sustantivos", "Advervios", "Adjetivos", "Verbos")
+
+# Convertir id a entero (por seguridad)
+resumen$id <- as.integer(resumen$id)
+
+# Unir con tu dataframe original
+df <- left_join(df, resumen, by = "id")
+
+# Reemplazar "digar" por "decir" en la columna Verbos
+df$Verbos <- gsub("\\bdigar\\b", "decir", df$Verbos)
+df$respuesta_dep <- gsub("\\bdigar\\b", "decir", df$respuesta_dep)
+
+# Eliminar "hacer" y "decir" en la columna verbos
+df$Verbos <- gsub("\\bhacer\\b", "", df$Verbos)
+df$Verbos <- gsub("\\bdecir\\b", "", df$Verbos)
+df$respuesta_dep <- gsub("\\bpues\\b", "", df$respuesta_dep)
+df$respuesta_dep <- gsub("\\bentonces\\b", "", df$respuesta_dep)
+df$respuesta_dep <- gsub("\\btambien\\b", "", df$respuesta_dep)
+df$respuesta_dep <- gsub("\\bmas\\b", "", df$respuesta_dep)
+df$respuesta_dep <- gsub("\\basi\\b", "", df$respuesta_dep)
+df$respuesta_dep <- gsub("\\bdigamos\\b", "", df$respuesta_dep)
+
+
+# Retiro de la palabra bue
+df$Sustantivos <- gsub("\\bbue\\b", "", df$Sustantivos)
+# Elimina espacios dobles que puedan haber quedado
+df$Sustantivos <- gsub("\\s+", " ", df$Sustantivos)
+# Quita espacios al inicio y fin si es necesario
+df$Sustantivos <- trimws(df$Sustantivos)
+
+
+
+
+rm(anotado, modelo, resumen)
+
+```
+
+
+
+
+```{r setup, include=FALSE}
+
+# Nube de palabras y palabras frecuentes
+
+# Crear matriz de términos
+dtm <- DocumentTermMatrix(Corpus(VectorSource(df$respuesta_dep)))
+
+# Convertir a matriz
+mat <- as.matrix(dtm)
+freq <- sort(colSums(mat), decreasing = TRUE)
+
+# Ver las palabras más frecuentes
+head(freq, 20)
+
+# Nube de palabras
+wordcloud(names(freq), freq, max.words = 100, random.order = FALSE)
+
+rm(dtm, mat, freq)
+
+```
+
+
+.
+
+```{r setup, include=FALSE}
+colnames(df)
+
+# Paso 1: Función para contar palabras top 5
+contar_palabras <- function(df, columna_texto, columna_grupo, tipo_palabra) {
+  df %>%
+    select(all_of(c(columna_grupo, columna_texto))) %>%
+    mutate(palabras = strsplit(.[[columna_texto]], "\\s+")) %>%
+    unnest(palabras) %>%
+    filter(!is.na(palabras), palabras != "") %>%
+    group_by(across(all_of(columna_grupo)), palabras) %>%
+    summarise(frecuencia = n(), .groups = "drop") %>%
+    arrange(desc(frecuencia)) %>%
+    group_by(across(all_of(columna_grupo))) %>%
+    slice_head(n = 20) %>%
+    mutate(
+      tipo = tipo_palabra,
+      orden = row_number(),
+      palabra = paste0(palabras, " (", frecuencia, ")")
+    ) %>%
+    select(all_of(columna_grupo), orden, tipo, palabra)
+}
+
+colnames(df)
+
+# Paso 2: Aplicar la función a cada tipo de palabra
+top_sus <- contar_palabras(df, "Sustantivos", "Bloque tematico", "Sustantivo")
+top_adv <- contar_palabras(df, "Advervios", "Bloque tematico", "Adverbio")
+top_adj <- contar_palabras(df, "Adjetivos", "Bloque tematico", "Adjetivo")
+top_ver <- contar_palabras(df, "Verbos", "Bloque tematico", "Verbo")
+
+# Paso 3: Unir todo
+top_palabras <- bind_rows(top_sus, top_adv, top_adj, top_ver) %>%
+  pivot_wider(names_from = tipo, values_from = palabra) %>%
+  arrange(`Bloque tematico`, orden) %>%
+  select(-orden)
+
+# Ver resultado
+print(top_palabras)
+```
+
+```{r setup, include=FALSE}
+write_xlsx(
+  list(
+    palabrasTop = top_palabras
+  ),
+  path = "C://Users//DELL//Downloads//Palabras Top.xlsx"
+)
+
+
+```
